@@ -10,3 +10,19 @@ __pycache__/
 
 # VS Code
 .vscode/
+# Entorno virtual
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
+
+# Repos externos
+TAL-IA/
+LSEGloss2SpanishText/
