@@ -95,7 +95,7 @@ def _lexicon_input_arguments(parser: argparse.ArgumentParser):
 
 def _text_input_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--text", type=str, required=True)
-    parser.add_argument("--glosser", choices=["simple", "spacylemma", "rules", "nmt"], required=True)
+    parser.add_argument("--glosser", choices=["simple", "spacylemma", "rules", "lse_rules", "nmt", "llm"], required=True)
 
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument("--lexicon", type=str)

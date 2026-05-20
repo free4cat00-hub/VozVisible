@@ -61,7 +61,7 @@ def async_generate_video(self, texto, slug, env):
         return {"status": "completed", "video_url": f"/{output_path}", "texto": texto, "cached": True}
 
     # Disable fingerspelling fallback so missing words are skipped but shown in subtitles
-    cmd = [sys.executable, "generate_video.py", "--text", texto, "--output", output_path, "--disable-fingerspelling"]
+    cmd = [sys.executable, "generate_video.py", "--text", texto, "--output", output_path, "--glosser", "lse_rules", "--disable-fingerspelling"]
 
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env, timeout=120)
