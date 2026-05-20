@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--glosser",
         default="llm",
-        choices=["simple", "spacylemma", "rules", "nmt", "llm"],
+        choices=["simple", "spacylemma", "rules", "lse_rules", "nmt", "llm"],
         help="Text-to-gloss backend",
     )
     parser.add_argument(
