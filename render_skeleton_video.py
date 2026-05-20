@@ -21,7 +21,7 @@ def render_skeleton_video(pose: Pose, output_path: str) -> None:
     width = int(pose.header.dimensions.width)
     height = int(pose.header.dimensions.height)
     fps = float(pose.body.fps)
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
     writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
     if not writer.isOpened():
