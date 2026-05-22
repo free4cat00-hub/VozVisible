@@ -7,7 +7,7 @@ services:
     name: vozvisible
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter  # ~$7/mes — suficiente para la demo
+    plan: free  # Cambiado a gratis (512MB RAM)
     envVars:
       - key: GROQ_API_KEY
         sync: false  # Lo pondrás manualmente en el dashboard de Render
