@@ -131,12 +131,29 @@
     const fb = document.getElementById('customFeedback'); if (fb) fb.classList.add('hidden');
     const player = document.getElementById('videoPlayer'); 
     if (player){ 
-      player.src = (videoUrl||'') + '?t=' + Date.now(); 
-      player.classList.remove('hidden'); 
+      const safeUrl = (videoUrl||'') + '?t=' + Date.now();
+      player.pause();
+      player.classList.add('hidden');
+      player.onerror = null;
+      player.onloadeddata = null;
+      player.oncanplay = null;
+      player.src = safeUrl;
+      player.load();
       player.playbackRate = 1.4; 
-      setTimeout(() => player.play(), 800); 
+      const revealPlayer = () => {
+        player.classList.remove('hidden');
+        const placeholder = document.getElementById('videoPlaceholder'); if (placeholder) placeholder.classList.add('hidden');
+        player.play().catch(() => {});
+      };
+      player.onloadeddata = revealPlayer;
+      player.oncanplay = revealPlayer;
+      player.onerror = () => {
+        const placeholder = document.getElementById('videoPlaceholder'); if (placeholder) placeholder.classList.remove('hidden');
+        showError('No se pudo cargar el vídeo generado.');
+      };
+      setTimeout(() => { if (!player.classList.contains('hidden')) return; player.play().catch(() => {}); }, 800); 
     }
-    const placeholder = document.getElementById('videoPlaceholder'); if (placeholder) placeholder.classList.add('hidden');
+    const placeholder = document.getElementById('videoPlaceholder'); if (placeholder) placeholder.classList.remove('hidden');
     const sub = SUBTITLES[window.currentTipo] || '';
     if (sub){ const st = document.getElementById('subtitleText'); if (st) st.textContent = sub; triggerSubtitle(); const playerEl = document.getElementById('videoPlayer'); if (playerEl){ playerEl.removeEventListener('seeked', triggerSubtitle); playerEl.addEventListener('seeked', triggerSubtitle); } }
     else { const subBar = document.getElementById('subtitleBar'); if (subBar) subBar.classList.remove('visible'); const playerEl = document.getElementById('videoPlayer'); if (playerEl) playerEl.removeEventListener('seeked', triggerSubtitle); }

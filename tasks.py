@@ -63,7 +63,10 @@ def cleanup_old_outputs():
 
 @celery_app.task(bind=True)
 def async_generate_video(self, texto, slug, env):
-    output_path = f"assets/output/{slug}.mp4"
+    # Bump this version whenever the rendering pipeline changes so old cached
+    # videos do not keep being reused in the UI.
+    pipeline_version = "v3"
+    output_path = f"assets/output/{slug}_{pipeline_version}.mp4"
     os.makedirs("assets/output", exist_ok=True)
     
     if os.path.exists(output_path):
