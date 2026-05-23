@@ -63,8 +63,10 @@ def async_generate_video(self, texto, slug, env):
     # Use backend_improvements.py (The "AI Mind") for processing
     cmd = [sys.executable, "backend_improvements.py", "--text", texto, "--output", output_path]
 
+    # Allow longer timeout for complex AI + rendering runs (configurable via env)
+    timeout_seconds = int(os.environ.get("AI_GENERATION_TIMEOUT", "600"))
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env, timeout=180)
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env, timeout=timeout_seconds)
         if os.path.exists(output_path):
             log_emission(texto, output_path)
             return {"status": "completed", "video_url": f"/{output_path}", "texto": texto}
