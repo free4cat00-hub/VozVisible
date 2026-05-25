@@ -2,7 +2,8 @@
 (function(){
   let isGenerating = false;
   const POLL_INTERVAL = 2000;
-  const MAX_WAIT = 120000; // ms
+  // Keep frontend polling aligned with backend task timeout (default 900s).
+  const MAX_WAIT = Number(window.MAX_WAIT_MS || 900000); // ms
 
   function isTyping() {
     const el = document.activeElement;
@@ -44,7 +45,7 @@
         }
         onUpdate(s);
         if (s.status === 'completed' || s.status === 'failed') { stopped = true; return; }
-        if (Date.now() - start > MAX_WAIT) { onUpdate({ error: 'Tiempo excedido' }); stopped = true; return; }
+        if (Date.now() - start > MAX_WAIT) { onUpdate({ error: 'Tiempo excedido. El proceso tarda más de lo esperado; inténtalo de nuevo en unos segundos.' }); stopped = true; return; }
       } catch(err){ onUpdate({ error: 'Error de red durante polling' }); stopped = true; return; }
       setTimeout(tick, POLL_INTERVAL);
     };
