@@ -288,6 +288,21 @@ def get_logs():
     logs = [{"id": r[0], "text": r[1], "timestamp": r[2]} for r in rows]
     return jsonify({"logs": logs})
 
+
+@app.route('/api/task-log/<job_id>')
+def get_task_log(job_id):
+    """Return the last 2000 characters of the per-task log if available."""
+    path = Path(f"assets/logs/{job_id}.log")
+    if not path.exists():
+        return jsonify({'error': 'No log found for job_id', 'exists': False}), 404
+    try:
+        data = path.read_text(encoding='utf-8')
+        # Return just the tail to avoid huge payloads
+        tail = data[-2000:]
+        return jsonify({'exists': True, 'log_tail': tail})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == "__main__":
     app.run(debug=True, port=5002, host="0.0.0.0")
 @app.route("/api/whatsapp")

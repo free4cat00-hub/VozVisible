@@ -79,6 +79,16 @@ def async_generate_video(self, texto, slug, env):
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("async_generate_video")
 
+    # Per-task logfile so we can fetch logs after the job finishes/crashes
+    os.makedirs('assets/logs', exist_ok=True)
+    task_log_path = f"assets/logs/{self.request.id}.log" if hasattr(self, 'request') else None
+    task_log_f = None
+    try:
+        if task_log_path:
+            task_log_f = open(task_log_path, 'a', encoding='utf-8')
+            task_log_f.write(f"Starting task {self.request.id} for slug={slug}\n")
+            task_log_f.flush()
+
     # Allow longer timeout for complex AI + rendering runs (configurable via env)
     timeout_seconds = int(os.environ.get("AI_GENERATION_TIMEOUT", "900"))
 
@@ -119,6 +129,9 @@ def async_generate_video(self, texto, slug, env):
                         out_line = proc.stdout.readline()
                         if out_line:
                             logger.info(out_line.strip())
+                            if task_log_f:
+                                task_log_f.write(out_line)
+                                task_log_f.flush()
                 except Exception:
                     pass
 
@@ -128,6 +141,9 @@ def async_generate_video(self, texto, slug, env):
                         err_line = proc.stderr.readline()
                         if err_line:
                             logger.warning(err_line.strip())
+                            if task_log_f:
+                                task_log_f.write(err_line)
+                                task_log_f.flush()
                 except Exception:
                     pass
 
@@ -149,6 +165,9 @@ def async_generate_video(self, texto, slug, env):
 
             returncode = proc.returncode
             logger.info(f"Subprocess finished returncode={returncode}")
+            if task_log_f:
+                task_log_f.write(f"Subprocess finished returncode={returncode}\n")
+                task_log_f.flush()
             _log_rss(logger, "after_subprocess")
 
         except subprocess.TimeoutExpired as e:
@@ -159,16 +178,25 @@ def async_generate_video(self, texto, slug, env):
                     proc.kill()
             except Exception:
                 pass
+            if task_log_f:
+                task_log_f.write(f"TimeoutExpired after {timeout_seconds}s: {e}\n")
+                task_log_f.flush()
             return {"status": "failed", "error": "Tiempo de generación excedido (la IA tardó demasiado)."}
         except subprocess.CalledProcessError as e:
             stderr = e.stderr if hasattr(e, 'stderr') else str(e)
             logger.error(f"CalledProcessError: {stderr}")
+            if task_log_f:
+                task_log_f.write(f"CalledProcessError: {stderr}\n")
+                task_log_f.flush()
             error_msg = f"Error en generación (IA): {stderr}"
             if "No poses found" in stderr or "Exception: No poses" in stderr:
                 error_msg = "Vocabulario insuficiente: incluso tras la IA, algunas palabras no pudieron ser representadas."
             return {"status": "failed", "error": error_msg}
         except Exception as e:
             logger.exception("Unexpected error while running subprocess: %s", e)
+            if task_log_f:
+                task_log_f.write(f"Unexpected error: {e}\n")
+                task_log_f.flush()
             return {"status": "failed", "error": "Error crítico durante la ejecución del proceso de IA."}
 
         if os.path.exists(output_path):
@@ -180,6 +208,9 @@ def async_generate_video(self, texto, slug, env):
             return {"status": "completed", "video_url": f"/{output_path}", "texto": texto}
         else:
             logger.error("Video file not found after subprocess completion")
+            if task_log_f:
+                task_log_f.write("Video file not found after subprocess completion\n")
+                task_log_f.flush()
             return {"status": "failed", "error": "No se pudo generar el video tras el proceso de IA."}
     except subprocess.CalledProcessError as e:
         stderr = e.stderr if hasattr(e, 'stderr') else str(e)
@@ -187,7 +218,20 @@ def async_generate_video(self, texto, slug, env):
         error_msg = f"Error en generación (IA): {stderr}"
         if "No poses found" in stderr or "Exception: No poses" in stderr:
             error_msg = "Vocabulario insuficiente: incluso tras la IA, algunas palabras no pudieron ser representadas."
+        if task_log_f:
+            task_log_f.write(f"CalledProcessError (outer): {stderr}\n")
+            task_log_f.flush()
         return {"status": "failed", "error": error_msg}
     except subprocess.TimeoutExpired as e:
         logger.error(f"TimeoutExpired after {timeout_seconds}s: {e}")
+        if task_log_f:
+            task_log_f.write(f"TimeoutExpired (outer) after {timeout_seconds}s: {e}\n")
+            task_log_f.flush()
         return {"status": "failed", "error": "Tiempo de generación excedido (la IA tardó demasiado)."}
+    finally:
+        try:
+            if task_log_f:
+                task_log_f.write("Task finished\n")
+                task_log_f.close()
+        except Exception:
+            pass
