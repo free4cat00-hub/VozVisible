@@ -83,11 +83,13 @@ def async_generate_video(self, texto, slug, env):
     os.makedirs('assets/logs', exist_ok=True)
     task_log_path = f"assets/logs/{self.request.id}.log" if hasattr(self, 'request') else None
     task_log_f = None
-    try:
-        if task_log_path:
+    if task_log_path:
+        try:
             task_log_f = open(task_log_path, 'a', encoding='utf-8')
             task_log_f.write(f"Starting task {self.request.id} for slug={slug}\n")
             task_log_f.flush()
+        except Exception:
+            task_log_f = None
 
     # Allow longer timeout for complex AI + rendering runs (configurable via env)
     timeout_seconds = int(os.environ.get("AI_GENERATION_TIMEOUT", "900"))
