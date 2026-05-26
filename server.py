@@ -167,6 +167,38 @@ def index():
 def serve_assets(filename):
     return send_from_directory("assets", filename)
 
+
+def _ensure_local_demo_video() -> Path:
+    """Generate a small local demo MP4 if it does not already exist."""
+    demo_path = Path("assets/output/test_local_pizza.mp4")
+    if demo_path.exists():
+        return demo_path
+
+    pose_path = Path("assets/dummy_lexicon/sgg/pizza.pose")
+    if not pose_path.exists():
+        raise FileNotFoundError("No se encontró el archivo de demo assets/dummy_lexicon/sgg/pizza.pose")
+
+    from pose_format import Pose
+    from render_skeleton_video import render_skeleton_video
+
+    demo_path.parent.mkdir(parents=True, exist_ok=True)
+    pose = Pose.read(pose_path.read_bytes())
+    render_skeleton_video(pose, str(demo_path))
+    return demo_path
+
+
+@app.route("/api/local-demo-video")
+def local_demo_video():
+    try:
+        demo_path = _ensure_local_demo_video()
+        return jsonify({
+            "exists": True,
+            "video_url": f"/{demo_path.as_posix()}",
+            "texto": "DEMO LOCAL VOZVISIBLE"
+        })
+    except Exception as e:
+        return jsonify({"exists": False, "error": str(e)}), 500
+
 @app.route("/api/alerts")
 def get_alerts():
     result = get_renfe_alerts_data()
@@ -198,13 +230,24 @@ def generate():
     if groq_key:
         env["GROQ_API_KEY"] = groq_key
         env["OPENAI_API_KEY"] = groq_key
-    # Submit generation as a Celery task
+    # Submit generation as a Celery task when the broker is available.
+    # Fall back to a local thread in development so localhost keeps working
+    # even if Redis is not installed or not running.
     from tasks import async_generate_video
-    task = async_generate_video.apply_async(args=(texto, slug, env))
-    return jsonify({"job_id": task.id, "status": "processing"})
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "processing", "texto": texto}
+    try:
+        task = async_generate_video.apply_async(args=(texto, slug, env))
+        return jsonify({"job_id": task.id, "status": "processing"})
+    except Exception:
+        worker = threading.Thread(target=generate_video_task, args=(job_id, texto, slug, env), daemon=True)
+        worker.start()
+        return jsonify({"job_id": job_id, "status": "processing", "mode": "local-thread"})
 
 @app.route("/api/status/<job_id>")
 def check_status(job_id):
+    if job_id in jobs:
+        return jsonify(jobs[job_id])
     from tasks import celery_app
     task = celery_app.AsyncResult(job_id)
     state = task.state
