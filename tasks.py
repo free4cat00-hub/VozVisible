@@ -93,14 +93,83 @@ def async_generate_video(self, texto, slug, env):
         _log_rss(logger, "before_subprocess")
 
         logger.info(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env, timeout=timeout_seconds)
 
-        logger.info(f"Subprocess finished returncode={result.returncode}")
-        if result.stdout:
-            logger.info(f"Subprocess stdout: {result.stdout}")
-        if result.stderr:
-            logger.warning(f"Subprocess stderr: {result.stderr}")
-        _log_rss(logger, "after_subprocess")
+        # Run subprocess and stream stdout/stderr to logger so we can see
+        # which pipeline step is currently executing in real time.
+        proc = None
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+            start_time = time.time()
+
+            # Read lines as they arrive and log them. Also enforce timeout_seconds.
+            while True:
+                # Check for timeout
+                elapsed = time.time() - start_time
+                if elapsed > timeout_seconds:
+                    logger.error(f"Subprocess exceeded timeout of {timeout_seconds}s, killing process")
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    raise subprocess.TimeoutExpired(cmd, timeout_seconds)
+
+                # Read stdout
+                try:
+                    if proc.stdout:
+                        out_line = proc.stdout.readline()
+                        if out_line:
+                            logger.info(out_line.strip())
+                except Exception:
+                    pass
+
+                # Read stderr
+                try:
+                    if proc.stderr:
+                        err_line = proc.stderr.readline()
+                        if err_line:
+                            logger.warning(err_line.strip())
+                except Exception:
+                    pass
+
+                # If process finished and pipes drained, break
+                if proc.poll() is not None:
+                    # drain remaining
+                    try:
+                        remaining_out = proc.stdout.read() if proc.stdout else ''
+                        remaining_err = proc.stderr.read() if proc.stderr else ''
+                        if remaining_out:
+                            logger.info(remaining_out.strip())
+                        if remaining_err:
+                            logger.warning(remaining_err.strip())
+                    except Exception:
+                        pass
+                    break
+
+                time.sleep(0.1)
+
+            returncode = proc.returncode
+            logger.info(f"Subprocess finished returncode={returncode}")
+            _log_rss(logger, "after_subprocess")
+
+        except subprocess.TimeoutExpired as e:
+            logger.error(f"TimeoutExpired after {timeout_seconds}s: {e}")
+            # Ensure process is dead
+            try:
+                if proc and proc.poll() is None:
+                    proc.kill()
+            except Exception:
+                pass
+            return {"status": "failed", "error": "Tiempo de generación excedido (la IA tardó demasiado)."}
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr if hasattr(e, 'stderr') else str(e)
+            logger.error(f"CalledProcessError: {stderr}")
+            error_msg = f"Error en generación (IA): {stderr}"
+            if "No poses found" in stderr or "Exception: No poses" in stderr:
+                error_msg = "Vocabulario insuficiente: incluso tras la IA, algunas palabras no pudieron ser representadas."
+            return {"status": "failed", "error": error_msg}
+        except Exception as e:
+            logger.exception("Unexpected error while running subprocess: %s", e)
+            return {"status": "failed", "error": "Error crítico durante la ejecución del proceso de IA."}
 
         if os.path.exists(output_path):
             log_emission(texto, output_path)
