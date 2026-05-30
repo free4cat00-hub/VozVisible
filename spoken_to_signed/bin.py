@@ -12,15 +12,30 @@ from spoken_to_signed.gloss_to_pose import (
     concatenate_poses,
     gloss_to_pose,
 )
-from spoken_to_signed.gloss_to_pose.lookup.fingerspelling_lookup import (
-    FingerspellingPoseLookup,
-)
 from spoken_to_signed.text_to_gloss.types import Gloss
+from spoken_to_signed.text_to_gloss.types import GlossItem
 
 
 def _text_to_gloss(text: str, language: str, glosser: str, **kwargs) -> list[Gloss]:
-    module = importlib.import_module(f"spoken_to_signed.text_to_gloss.{glosser}")
-    return module.text_to_gloss(text=text, language=language, **kwargs)
+    tried = []
+    candidates = [glosser, 'rules']
+    for cand in candidates:
+        try:
+            tried.append(cand)
+            module = importlib.import_module(f"spoken_to_signed.text_to_gloss.{cand}")
+            return module.text_to_gloss(text=text, language=language, **kwargs)
+        except Exception:
+            # try next fallback
+            continue
+    # If none could be imported, fall back to a very simple tokenizer/glosser
+    # to allow operation in minimal environments (no spaCy / simplemma).
+    print(f"Warning: falling back to built-in simple glosser. Tried: {', '.join(tried)}")
+    from spoken_to_signed.text_to_gloss.types import GlossItem
+
+    # naive split into a single-sentence gloss: each token becomes a gloss item
+    words = [w for w in text.strip().split() if w]
+    sentence = [GlossItem(word=w, gloss=w.lower()) for w in words]
+    return [sentence]
 
 
 def _gloss_to_pose(
@@ -28,11 +43,35 @@ def _gloss_to_pose(
     lexicon: str,
     spoken_language: str,
     signed_language: str,
-    disable_fingerspelling: bool = False,
+    disable_fingerspelling: bool = True,
 ) -> PoseResult:
-    backup = None if disable_fingerspelling else FingerspellingPoseLookup()
-    pose_lookup = CSVPoseLookup(lexicon, backup=backup)
-    results = [gloss_to_pose(gloss, pose_lookup, spoken_language, signed_language) for gloss in sentences]
+    # Respect the disable_fingerspelling flag: when fingerspelling is allowed
+    # (disable_fingerspelling==False) try to use the fingerspelling lexicon
+    # as a backup lookup. Otherwise leave backup as None so letters won't be
+    # sourced from the fingerspelling lexicon.
+    backup_lookup = None
+    try:
+        if not disable_fingerspelling:
+            fs_dir = os.path.join(os.path.dirname(lexicon), "fingerspelling_lexicon")
+            if os.path.isdir(fs_dir):
+                backup_lookup = CSVPoseLookup(fs_dir)
+    except Exception:
+        # If anything goes wrong building the backup, ignore and proceed
+        # without fingerspelling backup.
+        backup_lookup = None
+
+    pose_lookup = CSVPoseLookup(lexicon, backup=backup_lookup)
+
+    # Filter out single-character tokens and punctuation before lookup to
+    # avoid letter-by-letter fingerspelling being triggered by residual
+    # tokens like 'a' or '.' produced by the glosser.
+    filtered_sentences: list[Gloss] = []
+    for sent in sentences:
+        filtered = [item for item in sent if isinstance(item, GlossItem) and len((item.gloss or "").strip()) > 1 and (item.gloss or "").isalpha()]
+        # If filtering removed everything, fall back to the original sentence
+        filtered_sentences.append(filtered if filtered else sent)
+
+    results = [gloss_to_pose(gloss, pose_lookup, spoken_language, signed_language) for gloss in filtered_sentences]
     if len(results) == 1:
         return results[0]
     return PoseResult(pose=concatenate_poses([r.pose for r in results], trim=True))

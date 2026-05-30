@@ -3,13 +3,14 @@ import sys
 import subprocess
 import unicodedata
 import json
+import io
 import uuid
 import threading
 import sqlite3
 import glob
 import time
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, send_file
 
 # Optional: encrypt API keys at rest (import optional to avoid native deps in dev)
 try:
@@ -24,10 +25,25 @@ SECRETS_DIR = Path('secrets')
 SECRETS_DIR.mkdir(exist_ok=True)
 FERNET_PATH = SECRETS_DIR / 'fernet.key'
 if CRYPTO_AVAILABLE:
-    if not FERNET_PATH.exists():
-        FERNET_PATH.write_bytes(Fernet.generate_key())
-    FERNET_KEY = FERNET_PATH.read_bytes()
-    FERNET = Fernet(FERNET_KEY)
+    def _load_or_create_fernet():
+        try:
+            if not FERNET_PATH.exists():
+                key = Fernet.generate_key()
+                FERNET_PATH.write_bytes(key)
+                return Fernet(key)
+
+            key = FERNET_PATH.read_bytes().strip()
+            try:
+                return Fernet(key)
+            except Exception:
+                # Legacy or corrupt key: regenerate so the service can boot.
+                key = Fernet.generate_key()
+                FERNET_PATH.write_bytes(key)
+                return Fernet(key)
+        except Exception:
+            return None
+
+    FERNET = _load_or_create_fernet()
 else:
     FERNET = None
 
@@ -118,13 +134,47 @@ def _slugify(t: str) -> str:
 
 jobs = {}
 
+def _load_video_artifact(job_id: str):
+    """Return a file-like object for a rendered video if we can find one.
+
+    Priority: Redis artifact from worker dyno, then local filesystem fallback.
+    """
+    try:
+        import redis
+    except Exception:
+        redis = None
+
+    if redis is not None:
+        try:
+            redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/1")
+            client = redis.Redis.from_url(redis_url)
+            data = client.get(f"vozvisible:video:{job_id}")
+            if data:
+                return io.BytesIO(data)
+        except Exception:
+            pass
+
+    local_paths = []
+    if job_id in jobs:
+        output_path = jobs[job_id].get("output_path")
+        if output_path:
+            local_paths.append(output_path)
+
+    local_paths.extend([
+        f"assets/output/{job_id}.mp4",
+    ])
+
+    for candidate in local_paths:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
 def generate_video_task(job_id, texto, slug, env):
     output_path = f"assets/output/{slug}.mp4"
     os.makedirs("assets/output", exist_ok=True)
     
     if os.path.exists(output_path):
         log_emission(texto, output_path)
-        jobs[job_id] = {"status": "completed", "video_url": f"/{output_path}", "texto": texto, "cached": True}
+        jobs[job_id] = {"status": "completed", "video_url": f"/api/video/{job_id}.mp4", "texto": texto, "cached": True, "output_path": output_path}
         return
 
     cmd = [sys.executable, "generate_video.py", "--text", texto, "--output", output_path, "--disable-fingerspelling"]
@@ -133,7 +183,7 @@ def generate_video_task(job_id, texto, slug, env):
         result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env, timeout=120)
         if os.path.exists(output_path):
             log_emission(texto, output_path)
-            jobs[job_id] = {"status": "completed", "video_url": f"/{output_path}", "texto": texto}
+            jobs[job_id] = {"status": "completed", "video_url": f"/api/video/{job_id}.mp4", "texto": texto, "output_path": output_path}
         else:
             jobs[job_id] = {"status": "failed", "error": "No se pudo generar el video."}
     except subprocess.CalledProcessError as e:
@@ -151,6 +201,49 @@ def index():
 @app.route("/assets/<path:filename>")
 def serve_assets(filename):
     return send_from_directory("assets", filename)
+
+@app.route("/api/video/<job_id>.mp4")
+def serve_generated_video(job_id):
+    artifact = _load_video_artifact(job_id)
+    if artifact is None:
+        return jsonify({"error": "No se encontró el video generado", "job_id": job_id}), 404
+
+    if isinstance(artifact, str):
+        return send_from_directory(os.path.dirname(artifact), os.path.basename(artifact), mimetype="video/mp4")
+
+    artifact.seek(0)
+    return send_file(artifact, mimetype="video/mp4", as_attachment=False, download_name=f"{job_id}.mp4")
+
+def _ensure_local_demo_video() -> Path:
+    """Generate a small local demo MP4 if it does not already exist."""
+    demo_path = Path("assets/output/test_local_pizza.mp4")
+    if demo_path.exists():
+        return demo_path
+
+    pose_path = Path("assets/dummy_lexicon/sgg/pizza.pose")
+    if not pose_path.exists():
+        raise FileNotFoundError("No se encontró el archivo de demo assets/dummy_lexicon/sgg/pizza.pose")
+
+    from pose_format import Pose
+    from render_skeleton_video import render_skeleton_video
+
+    demo_path.parent.mkdir(parents=True, exist_ok=True)
+    pose = Pose.read(pose_path.read_bytes())
+    render_skeleton_video(pose, str(demo_path))
+    return demo_path
+
+
+@app.route("/api/local-demo-video")
+def local_demo_video():
+    try:
+        demo_path = _ensure_local_demo_video()
+        return jsonify({
+            "exists": True,
+            "video_url": f"/{demo_path.as_posix()}",
+            "texto": "DEMO LOCAL VOZVISIBLE"
+        })
+    except Exception as e:
+        return jsonify({"exists": False, "error": str(e)}), 500
 
 @app.route("/api/alerts")
 def get_alerts():
@@ -183,13 +276,24 @@ def generate():
     if groq_key:
         env["GROQ_API_KEY"] = groq_key
         env["OPENAI_API_KEY"] = groq_key
-    # Submit generation as a Celery task
+    # Submit generation as a Celery task when the broker is available.
+    # Fall back to a local thread in development so localhost keeps working
+    # even if Redis is not installed or not running.
     from tasks import async_generate_video
-    task = async_generate_video.apply_async(args=(texto, slug, env))
-    return jsonify({"job_id": task.id, "status": "processing"})
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "processing", "texto": texto}
+    try:
+        task = async_generate_video.apply_async(args=(texto, slug, env))
+        return jsonify({"job_id": task.id, "status": "processing"})
+    except Exception:
+        worker = threading.Thread(target=generate_video_task, args=(job_id, texto, slug, env), daemon=True)
+        worker.start()
+        return jsonify({"job_id": job_id, "status": "processing", "mode": "local-thread"})
 
 @app.route("/api/status/<job_id>")
 def check_status(job_id):
+    if job_id in jobs:
+        return jsonify(jobs[job_id])
     from tasks import celery_app
     task = celery_app.AsyncResult(job_id)
     state = task.state
@@ -272,6 +376,21 @@ def get_logs():
     
     logs = [{"id": r[0], "text": r[1], "timestamp": r[2]} for r in rows]
     return jsonify({"logs": logs})
+
+
+@app.route('/api/task-log/<job_id>')
+def get_task_log(job_id):
+    """Return the last 2000 characters of the per-task log if available."""
+    path = Path(f"assets/logs/{job_id}.log")
+    if not path.exists():
+        return jsonify({'error': 'No log found for job_id', 'exists': False}), 404
+    try:
+        data = path.read_text(encoding='utf-8')
+        # Return just the tail to avoid huge payloads
+        tail = data[-2000:]
+        return jsonify({'exists': True, 'log_tail': tail})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == "__main__":
     app.run(debug=True, port=5002, host="0.0.0.0")
