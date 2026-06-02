@@ -77,7 +77,6 @@ Este proyecto se alinea con los **Objetivos de Desarrollo Sostenible (ODS)** de 
 ## 👥 El Equipo (Saturdays.AI 2026)
 * Alonso Campos 
 * Adrián Bisquert
-* Abigail Masapanta 
 * Gabriel Vidal
 * Umit Gungor 
 
